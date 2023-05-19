@@ -11,9 +11,9 @@ import sys
 import time
 from functools import cached_property
 
-import climetlab as cml
+import earthkit.data as ekd
 import entrypoints
-from climetlab.utils.humanize import seconds
+from earthkit.data.utils.humanize import seconds
 from multiurl import download
 
 LOG = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class MarsInput:
             area=self.owner.area,
             levtype="sfc",
         )
-        return cml.load_source("mars", request)
+        return ekd.from_source("mars", request)
 
     @cached_property
     def fields_pl(self):
@@ -49,7 +49,7 @@ class MarsInput:
             area=self.owner.area,
             levtype="pl",
         )
-        return cml.load_source("mars", request)
+        return ekd.from_source("mars", request)
 
     @cached_property
     def all_fields(self):
@@ -72,7 +72,7 @@ class CdsInput:
             area=self.owner.area,
             levtype="sfc",
         )
-        return cml.load_source("cds", "reanalysis-era5-single-levels", request)
+        return ekd.from_source("cds", "reanalysis-era5-single-levels", request)
 
     @cached_property
     def fields_pl(self):
@@ -88,7 +88,7 @@ class CdsInput:
             area=self.owner.area,
             levtype="pl",
         )
-        return cml.load_source("cds", "reanalysis-era5-pressure-levels", request)
+        return ekd.from_source("cds", "reanalysis-era5-pressure-levels", request)
 
     @cached_property
     def all_fields(self):
@@ -102,15 +102,15 @@ class FileInput:
 
     @cached_property
     def fields_sfc(self):
-        return cml.load_source("file", self.file).sel(levtype="sfc")
+        return ekd.from_source("file", self.file).sel(levtype="sfc")
 
     @cached_property
     def fields_pl(self):
-        return cml.load_source("file", self.file).sel(levtype="pl")
+        return ekd.from_source("file", self.file).sel(levtype="pl")
 
     @cached_property
     def all_fields(self):
-        return cml.load_source("file", self.file)
+        return ekd.from_source("file", self.file)
 
 
 class FileOutput:
@@ -121,7 +121,7 @@ class FileOutput:
         LOG.info("Writting results to %s.", path)
         self.path = path
         self.owner = owner
-        self.output = cml.new_grib_output(
+        self.output = ekd.new_grib_output(
             path,
             split_output=True,
             class_="ml",
