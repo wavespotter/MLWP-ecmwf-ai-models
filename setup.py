@@ -43,7 +43,7 @@ setuptools.setup(
     include_package_data=True,
     install_requires=[
         "entrypoints",
-        "earthkit-data @ git+ssh://git@github.com/ecmwf/earthkit-data.git@feature/ai-models",
+        "earthkit-data @ git+ssh://git@github.com/ecmwf/earthkit-data.git@develop",
         "multiurl",
         "ecmwflibs>=0.5.3",
         "gputil",
