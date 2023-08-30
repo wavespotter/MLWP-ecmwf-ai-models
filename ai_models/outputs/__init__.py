@@ -7,7 +7,7 @@
 
 import logging
 
-import climetlab as cml
+import earthkit.data as ekd
 
 LOG = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class FileOutput:
         LOG.info("Writting results to %s.", path)
         self.path = path
         self.owner = owner
-        self.output = cml.new_grib_output(
+        self.output = ekd.new_grib_output(
             path,
             split_output=True,
             edition=2,

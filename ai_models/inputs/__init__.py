@@ -8,7 +8,7 @@
 import logging
 from functools import cached_property
 
-import climetlab as cml
+import earthkit.data as ekd
 
 LOG = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class RequestBasedInput:
     def fields_sfc(self):
         LOG.info(f"Loading surface fields from {self.WHERE}")
 
-        return cml.load_source(
+        return ekd.from_source(
             "multi",
             [
                 self.sfc_load_source(
@@ -47,7 +47,7 @@ class RequestBasedInput:
     def fields_pl(self):
         LOG.info(f"Loading pressure fields from {self.WHERE}")
         param, level = self.owner.param_level_pl
-        return cml.load_source(
+        return ekd.from_source(
             "multi",
             [
                 self.pl_load_source(
@@ -78,22 +78,22 @@ class MarsInput(RequestBasedInput):
     def pl_load_source(self, **kwargs):
         kwargs["levtype"] = "pl"
         logging.debug("load source mars %s", kwargs)
-        return cml.load_source("mars", kwargs)
+        return ekd.from_source("mars", kwargs)
 
     def sfc_load_source(self, **kwargs):
         kwargs["levtype"] = "sfc"
         logging.debug("load source mars %s", kwargs)
-        return cml.load_source("mars", kwargs)
+        return ekd.from_source("mars", kwargs)
 
 
 class CdsInput(RequestBasedInput):
     WHERE = "CDS"
 
     def pl_load_source(self, **kwargs):
-        return cml.load_source("cds", "reanalysis-era5-pressure-levels", kwargs)
+        return ekd.from_source("cds", "reanalysis-era5-pressure-levels", kwargs)
 
     def sfc_load_source(self, **kwargs):
-        return cml.load_source("cds", "reanalysis-era5-single-levels", kwargs)
+        return ekd.from_source("cds", "reanalysis-era5-single-levels", kwargs)
 
 
 class FileInput:
@@ -103,15 +103,15 @@ class FileInput:
 
     @cached_property
     def fields_sfc(self):
-        return cml.load_source("file", self.file).sel(levtype="sfc")
+        return ekd.from_source("file", self.file).sel(levtype="sfc")
 
     @cached_property
     def fields_pl(self):
-        return cml.load_source("file", self.file).sel(levtype="pl")
+        return ekd.from_source("file", self.file).sel(levtype="pl")
 
     @cached_property
     def all_fields(self):
-        return cml.load_source("file", self.file)
+        return ekd.from_source("file", self.file)
 
 
 class FileOutput:
@@ -123,7 +123,7 @@ class FileOutput:
         LOG.info("Writting results to %s.", path)
         self.path = path
         self.owner = owner
-        self.output = cml.new_grib_output(
+        self.output = ekd.new_grib_output(
             path,
             split_output=True,
             edition=2,
