@@ -5,10 +5,12 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
+import datetime
 import logging
 import os
 import sys
 import time
+from collections import defaultdict
 from functools import cached_property
 
 import earthkit.data as ekd
@@ -19,80 +21,76 @@ from multiurl import download
 LOG = logging.getLogger(__name__)
 
 
-class MarsInput:
+class RequestBasedInput:
     def __init__(self, owner, **kwargs):
         self.owner = owner
 
     @cached_property
     def fields_sfc(self):
-        LOG.info("Loading surface fields from MARS")
-        request = dict(
-            date=self.owner.date,
-            time=self.owner.time,
-            param=self.owner.param_sfc,
-            grid=self.owner.grid,
-            area=self.owner.area,
-            levtype="sfc",
+        LOG.info(f"Loading surface fields from {self.WHERE}")
+        return ekd.from_source(
+            "multi",
+            [
+                self.sfc_load_source(
+                    date=date,
+                    time=time,
+                    param=self.owner.param_sfc,
+                    grid=self.owner.grid,
+                    area=self.owner.area,
+                )
+                for date, time in self.owner.datetimes()
+            ],
         )
-        return ekd.from_source("mars", request)
 
     @cached_property
     def fields_pl(self):
-        LOG.info("Loading pressure fields from MARS")
+        LOG.info(f"Loading pressure fields from {self.WHERE}")
         param, level = self.owner.param_level_pl
-        request = dict(
-            date=self.owner.date,
-            time=self.owner.time,
-            param=param,
-            level=level,
-            grid=self.owner.grid,
-            area=self.owner.area,
-            levtype="pl",
+        return ekd.from_source(
+            "multi",
+            [
+                self.pl_load_source(
+                    date=date,
+                    time=time,
+                    param=param,
+                    level=level,
+                    grid=self.owner.grid,
+                    area=self.owner.area,
+                )
+                for date, time in self.owner.datetimes()
+            ],
         )
-        return ekd.from_source("mars", request)
 
     @cached_property
     def all_fields(self):
         return self.fields_sfc + self.fields_pl
 
 
-class CdsInput:
+class MarsInput(RequestBasedInput):
+    WHERE = "MARS"
+
     def __init__(self, owner, **kwargs):
         self.owner = owner
 
-    @cached_property
-    def fields_sfc(self):
-        LOG.info("Loading surface fields from the CDS")
-        request = dict(
-            product_type="reanalysis",
-            date=self.owner.date,
-            time=self.owner.time,
-            param=self.owner.param_sfc,
-            grid=self.owner.grid,
-            area=self.owner.area,
-            levtype="sfc",
-        )
-        return ekd.from_source("cds", "reanalysis-era5-single-levels", request)
+    def pl_load_source(self, **kwargs):
+        kwargs["levtype"] = "pl"
+        logging.debug("load source mars %s", kwargs)
+        return ekd.from_source("mars", kwargs)
 
-    @cached_property
-    def fields_pl(self):
-        LOG.info("Loading pressure fields  from the CDS")
-        param, level = self.owner.param_level_pl
-        request = dict(
-            product_type="reanalysis",
-            date=self.owner.date,
-            time=self.owner.time,
-            param=param,
-            level=level,
-            grid=self.owner.grid,
-            area=self.owner.area,
-            levtype="pl",
-        )
-        return ekd.from_source("cds", "reanalysis-era5-pressure-levels", request)
+    def sfc_load_source(self, **kwargs):
+        kwargs["levtype"] = "sfc"
+        logging.debug("load source mars %s", kwargs)
+        return ekd.from_source("mars", kwargs)
 
-    @cached_property
-    def all_fields(self):
-        return self.fields_sfc + self.fields_pl
+
+class CdsInput(RequestBasedInput):
+    WHERE = "CDS"
+
+    def pl_load_source(self, **kwargs):
+        return ekd.from_source("cds", "reanalysis-era5-pressure-levels", kwargs)
+  
+    def sfc_load_source(self, **kwargs):
+        return ekd.from_source("cds", "reanalysis-era5-single-levels", kwargs)
 
 
 class FileInput:
@@ -114,9 +112,10 @@ class FileInput:
 
 
 class FileOutput:
-    def __init__(self, owner, path, expver, **kwargs):
-        if expver is None:
-            expver = owner.expver
+    def __init__(self, owner, path, metadata, **kwargs):
+        self._first = True
+        metadata.setdefault("expver", owner.expver)
+        metadata.setdefault("class", "ml")
 
         LOG.info("Writting results to %s.", path)
         self.path = path
@@ -124,13 +123,12 @@ class FileOutput:
         self.output = ekd.new_grib_output(
             path,
             split_output=True,
-            class_="ml",
-            expver=expver,
             edition=2,
+            **metadata,
         )
 
     def write(self, *args, **kwargs):
-        self.output.write(*args, **kwargs)
+        return self.output.write(*args, **kwargs)
 
 
 class NoneOutput:
@@ -199,7 +197,19 @@ class Stepper:
         LOG.info("Average: %s per step.", seconds(elapsed / self.num_steps))
 
 
+class ArchiveCollector:
+    def __init__(self) -> None:
+        self.expect = 0
+        self.request = defaultdict(set)
+
+    def add(self, field):
+        self.expect += 1
+        for k, v in field.items():
+            self.request[k].add(str(v))
+
+
 class Model:
+    lagged = False
     assets_extra_dir = None
 
     def __init__(self, input, output, download_assets, **kwargs):
@@ -224,6 +234,8 @@ class Model:
         if download_assets:
             self.download_assets(**kwargs)
 
+        self.archiving = defaultdict(ArchiveCollector)
+
     @cached_property
     def fields_pl(self):
         return self.input.fields_pl
@@ -237,12 +249,29 @@ class Model:
         return self.input.all_fields
 
     def write(self, *args, **kwargs):
-        self.output.write(*args, **kwargs)
+        self.collect_archive_requests(
+            self.output.write(*args, **kwargs),
+        )
+
+    def collect_archive_requests(self, written):
+        if self.archive_requests:
+            handle, path = written
+            self.archiving[path].add(handle.as_mars())
+
+    def finalise(self):
+        if self.archive_requests:
+            with open(self.archive_requests, "w") as f:
+                for path, archive in self.archiving.items():
+                    request = dict(source=f'"{path}"', expect=archive.expect)
+                    request.update(archive.request)
+                    request.update(self._requests_extra)
+                    self._print_request("archive", request, file=f)
 
     def download_assets(self, **kwargs):
         for file in self.download_files:
             asset = os.path.realpath(os.path.join(self.assets, file))
             if not os.path.exists(asset):
+                os.makedirs(os.path.dirname(asset), exist_ok=True)
                 LOG.info("Downloading %s", asset)
                 download(self.download_url.format(file=file), asset + ".download")
                 os.rename(asset + ".download", asset)
@@ -304,6 +333,43 @@ class Model:
     def stepper(self, step):
         return Stepper(step, self.lead_time)
 
+    def datetimes(self):
+        date = self.date
+        assert isinstance(date, int)
+        if date <= 0:
+            date = datetime.datetime.utcnow() + datetime.timedelta(days=date)
+            date = date.year * 10000 + date.month * 100 + date.day
+
+        time = self.time
+        assert isinstance(time, int)
+        if time < 100:
+            time *= 100
+        assert time in (0, 600, 1200, 1800), time
+
+        lagged = self.lagged
+        if not lagged:
+            lagged = [0]
+
+        full = datetime.datetime(
+            date // 10000,
+            date % 10000 // 100,
+            date % 100,
+            time // 100,
+            time % 100,
+        )
+
+        result = []
+        for lag in lagged:
+            date = full + datetime.timedelta(hours=lag)
+            result.append(
+                (
+                    date.year * 10000 + date.month * 100 + date.day,
+                    date.hour,
+                ),
+            )
+
+        return result
+
     def print_fields(self):
         param, level = self.param_level_pl
         print("Grid:", self.grid)
@@ -313,6 +379,61 @@ class Model:
         print("   Params:", param)
         print("Single levels:")
         print("   Params:", self.param_sfc)
+
+    def print_assets_list(self):
+        for file in self.download_files:
+            print(file)
+
+    def _print_request(self, verb, request, file=sys.stdout):
+        r = [verb]
+        for k, v in request.items():
+            if not isinstance(v, (list, tuple, set)):
+                v = [v]
+            v = [str(_) for _ in v]
+            v = "/".join(v)
+            r.append(f"{k}={v}")
+
+        r = ",\n   ".join(r)
+        print(r, file=file)
+        print(file=file)
+
+    @property
+    def _requests_extra(self):
+        if not self.requests_extra:
+            return {}
+        extra = [_.split("=") for _ in self.requests_extra.split(",")]
+        extra = {a: b for a, b in extra}
+        return extra
+
+    def print_requests(self):
+        first = dict(
+            target="input.grib",
+            grid=self.grid,
+            area=self.area,
+        )
+        for date, time in self.datetimes():  # noqa F402
+            param, level = self.param_level_pl
+
+            r = dict(
+                levtype="pl",
+                levelist=level,
+                param=param,
+                date=date,
+                time=time,
+            )
+            r.update(first)
+            first = {}
+
+            r.update(self._requests_extra)
+
+            self._print_request("retrieve", r)
+
+            r = dict(
+                levtype="sfc",
+                param=self.param_sfc,
+            )
+
+            self._print_request("retrieve", r)
 
 
 def load_model(name, **kwargs):

@@ -35,6 +35,31 @@ def main():
     )
 
     parser.add_argument(
+        "--retrieve-requests",
+        help=(
+            "Print mars requests to stdout."
+            "Use --requests-extra to extend or overide the requests. "
+        ),
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--archive-requests",
+        help=(
+            "Save mars archive requests to FILE."
+            "Use --requests-extra to extend or overide the requests. "
+        ),
+        metavar="FILE",
+    )
+
+    parser.add_argument(
+        "--requests-extra",
+        help=(
+            "Extends the retrieve or archive requests with a list of key1=value1,key2=value."
+        ),
+    )
+
+    parser.add_argument(
         "--input",
         default="mars",
         help="Source to use",
@@ -75,6 +100,14 @@ def main():
     parser.add_argument(
         "--assets-sub-directory",
         help="Load assets from a subdirectory of --assets based on the name of the model.",
+        action=argparse.BooleanOptionalAction,
+    )
+
+    parser.parse_args(["--no-assets-sub-directory"])
+
+    parser.add_argument(
+        "--assets-list",
+        help="List the assets used by the model",
         action="store_true",
     )
 
@@ -97,7 +130,21 @@ def main():
 
     parser.add_argument(
         "--expver",
-        help="Set the experiment version of the model output",
+        help="Set the experiment version of the model output. Has higher priority than --metadata.",
+    )
+
+    parser.add_argument(
+        "--class",
+        help="Set the 'class' metadata of the model output. Has higher priority than --metadata.",
+        metavar="CLASS",
+        dest="class_",
+    )
+
+    parser.add_argument(
+        "--metadata",
+        help="Set additional metadata metadata in the model output",
+        metavar="KEY=VALUE",
+        action="append",
     )
 
     parser.add_argument(
@@ -144,16 +191,42 @@ def main():
     if args.file is not None:
         args.input = "file"
 
-    if not args.fields:
+    if not args.fields and not args.retrieve_requests and not args.requests_extra:
         logging.basicConfig(
             level="DEBUG" if args.debug else "INFO",
             format="%(asctime)s %(levelname)s %(message)s",
         )
 
+    if args.metadata is None:
+        args.metadata = []
+
+    args.metadata = dict(kv.split("=") for kv in args.metadata)
+
+    if args.expver is not None:
+        args.metadata["expver"] = args.expver
+
+    if args.class_ is not None:
+        args.metadata["class"] = args.class_
+
     model = load_model(args.model, **vars(args))
 
     if args.fields:
         model.print_fields()
+        sys.exit(0)
+
+    if args.requests_extra:
+        if not args.retrieve_requests and not args.archive_requests:
+            parser.error(
+                "You need to specify --retrieve-requests or --archive-requests"
+            )
+
+    # This logic is a bit convoluted, but it is for backwards compatibility.
+    if args.retrieve_requests or (args.requests_extra and not args.archive_requests):
+        model.print_requests()
+        sys.exit(0)
+
+    if args.assets_list:
+        model.print_assets_list()
         sys.exit(0)
 
     try:
@@ -170,6 +243,8 @@ def main():
             shlex.join([sys.argv[0], "--download-assets"] + sys.argv[1:]),
         )
         sys.exit(1)
+
+    model.finalise()
 
 
 if __name__ == "__main__":
