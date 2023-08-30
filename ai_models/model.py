@@ -6,6 +6,7 @@
 # nor does it submit to any jurisdiction.
 
 import datetime
+import json
 import logging
 import os
 import sys
@@ -13,142 +14,16 @@ import time
 from collections import defaultdict
 from functools import cached_property
 
-import earthkit.data as ekd
 import entrypoints
 from earthkit.data.utils.humanize import seconds
 from multiurl import download
 
+from .checkpoint import peek
+from .inputs import get_input
+from .outputs import get_output
+from .stepper import Stepper
+
 LOG = logging.getLogger(__name__)
-
-
-class RequestBasedInput:
-    def __init__(self, owner, **kwargs):
-        self.owner = owner
-
-    @cached_property
-    def fields_sfc(self):
-        LOG.info(f"Loading surface fields from {self.WHERE}")
-        return ekd.from_source(
-            "multi",
-            [
-                self.sfc_load_source(
-                    date=date,
-                    time=time,
-                    param=self.owner.param_sfc,
-                    grid=self.owner.grid,
-                    area=self.owner.area,
-                )
-                for date, time in self.owner.datetimes()
-            ],
-        )
-
-    @cached_property
-    def fields_pl(self):
-        LOG.info(f"Loading pressure fields from {self.WHERE}")
-        param, level = self.owner.param_level_pl
-        return ekd.from_source(
-            "multi",
-            [
-                self.pl_load_source(
-                    date=date,
-                    time=time,
-                    param=param,
-                    level=level,
-                    grid=self.owner.grid,
-                    area=self.owner.area,
-                )
-                for date, time in self.owner.datetimes()
-            ],
-        )
-
-    @cached_property
-    def all_fields(self):
-        return self.fields_sfc + self.fields_pl
-
-
-class MarsInput(RequestBasedInput):
-    WHERE = "MARS"
-
-    def __init__(self, owner, **kwargs):
-        self.owner = owner
-
-    def pl_load_source(self, **kwargs):
-        kwargs["levtype"] = "pl"
-        logging.debug("load source mars %s", kwargs)
-        return ekd.from_source("mars", kwargs)
-
-    def sfc_load_source(self, **kwargs):
-        kwargs["levtype"] = "sfc"
-        logging.debug("load source mars %s", kwargs)
-        return ekd.from_source("mars", kwargs)
-
-
-class CdsInput(RequestBasedInput):
-    WHERE = "CDS"
-
-    def pl_load_source(self, **kwargs):
-        return ekd.from_source("cds", "reanalysis-era5-pressure-levels", kwargs)
-  
-    def sfc_load_source(self, **kwargs):
-        return ekd.from_source("cds", "reanalysis-era5-single-levels", kwargs)
-
-
-class FileInput:
-    def __init__(self, owner, file, **kwargs):
-        self.file = file
-        self.owner = owner
-
-    @cached_property
-    def fields_sfc(self):
-        return ekd.from_source("file", self.file).sel(levtype="sfc")
-
-    @cached_property
-    def fields_pl(self):
-        return ekd.from_source("file", self.file).sel(levtype="pl")
-
-    @cached_property
-    def all_fields(self):
-        return ekd.from_source("file", self.file)
-
-
-class FileOutput:
-    def __init__(self, owner, path, metadata, **kwargs):
-        self._first = True
-        metadata.setdefault("expver", owner.expver)
-        metadata.setdefault("class", "ml")
-
-        LOG.info("Writting results to %s.", path)
-        self.path = path
-        self.owner = owner
-        self.output = ekd.new_grib_output(
-            path,
-            split_output=True,
-            edition=2,
-            **metadata,
-        )
-
-    def write(self, *args, **kwargs):
-        return self.output.write(*args, **kwargs)
-
-
-class NoneOutput:
-    def __init__(self, *args, **kwargs):
-        LOG.info("Results will not be written.")
-
-    def write(self, *args, **kwargs):
-        pass
-
-
-INPUTS = dict(
-    mars=MarsInput,
-    file=FileInput,
-    cds=CdsInput,
-)
-
-OUTPUTS = dict(
-    file=FileOutput,
-    none=NoneOutput,
-)
 
 
 class Timer:
@@ -162,39 +37,6 @@ class Timer:
     def __exit__(self, *args):
         elapsed = time.time() - self.start
         LOG.info("%s: %s.", self.title, seconds(elapsed))
-
-
-class Stepper:
-    def __init__(self, step, lead_time):
-        self.step = step
-        self.lead_time = lead_time
-        self.start = time.time()
-        self.last = self.start
-        self.num_steps = lead_time // step
-        LOG.info("Starting inference for %s steps (%sh).", self.num_steps, lead_time)
-
-    def __enter__(self):
-        return self
-
-    def __call__(self, i, step):
-        now = time.time()
-        elapsed = now - self.start
-        speed = (i + 1) / elapsed
-        eta = (self.num_steps - i) / speed
-        LOG.info(
-            "Done %s out of %s in %s (%sh), ETA: %s.",
-            i + 1,
-            self.num_steps,
-            seconds(now - self.last),
-            step,
-            seconds(eta),
-        )
-        self.last = now
-
-    def __exit__(self, *args):
-        elapsed = time.time() - self.start
-        LOG.info("Elapsed: %s.", seconds(elapsed))
-        LOG.info("Average: %s per step.", seconds(elapsed / self.num_steps))
 
 
 class ArchiveCollector:
@@ -211,13 +53,19 @@ class ArchiveCollector:
 class Model:
     lagged = False
     assets_extra_dir = None
+    retrieve = {}  # Extra parameters for retrieve
 
     def __init__(self, input, output, download_assets, **kwargs):
-        self.input = INPUTS[input](self, **kwargs)
-        self.output = OUTPUTS[output](self, **kwargs)
+        self.input = get_input(input, self, **kwargs)
+        self.output = get_output(output, self, **kwargs)
 
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+        if self.model_args:
+            args = self.parse_model_args(self.model_args)
+            for k, v in vars(args).items():
+                setattr(self, k, v)
 
         if self.assets_sub_directory:
             if self.assets_extra_dir is not None:
@@ -235,6 +83,7 @@ class Model:
             self.download_assets(**kwargs)
 
         self.archiving = defaultdict(ArchiveCollector)
+        self.created = time.time()
 
     @cached_property
     def fields_pl(self):
@@ -331,6 +180,10 @@ class Model:
         return Timer(title)
 
     def stepper(self, step):
+        # We assume that we call this method only once
+        # just before the first iteration.
+        elapsed = time.time() - self.created
+        LOG.info("Model initialisation: %s", seconds(elapsed))
         return Stepper(step, self.lead_time)
 
     def datetimes(self):
@@ -406,11 +259,25 @@ class Model:
         return extra
 
     def print_requests(self):
+        requests = self._requests()
+
+        if self.json:
+            print(json.dumps(requests, indent=4))
+            return
+
+        for r in requests:
+            self._print_request("retrieve", r)
+
+    def _requests(self):
+        result = []
+
         first = dict(
             target="input.grib",
             grid=self.grid,
             area=self.area,
         )
+        first.update(self.retrieve)
+
         for date, time in self.datetimes():  # noqa F402
             param, level = self.param_level_pl
 
@@ -426,14 +293,31 @@ class Model:
 
             r.update(self._requests_extra)
 
-            self._print_request("retrieve", r)
+            self.patch_retrieve_request(r)
 
-            r = dict(
-                levtype="sfc",
-                param=self.param_sfc,
+            result.append(dict(**r))
+
+            r.update(
+                dict(
+                    levtype="sfc",
+                    param=self.param_sfc,
+                )
             )
 
-            self._print_request("retrieve", r)
+            self.patch_retrieve_request(r)
+            result.append(dict(**r))
+
+        return result
+
+    def patch_retrieve_request(self, request):
+        # Overriden in subclasses if needed
+        pass
+
+    def peek_into_checkpoint(self, path):
+        return peek(path)
+
+    def parse_model_args(self, args):
+        raise NotImplementedError(f"This model does not accept arguments {args}")
 
 
 def load_model(name, **kwargs):
@@ -445,11 +329,3 @@ def available_models():
     for e in entrypoints.get_group_all("ai_models.model"):
         result[e.name] = e
     return result
-
-
-def available_inputs():
-    return sorted(INPUTS.keys())
-
-
-def available_outputs():
-    return sorted(OUTPUTS.keys())

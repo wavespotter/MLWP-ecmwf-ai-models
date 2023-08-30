@@ -11,7 +11,9 @@ import os
 import shlex
 import sys
 
-from .model import available_inputs, available_models, available_outputs, load_model
+from .inputs import available_inputs
+from .model import available_models, load_model
+from .outputs import available_outputs
 
 LOG = logging.getLogger(__name__)
 
@@ -57,6 +59,12 @@ def main():
         help=(
             "Extends the retrieve or archive requests with a list of key1=value1,key2=value."
         ),
+    )
+
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help=("Dump the requests in JSON format."),
     )
 
     parser.add_argument(
@@ -175,7 +183,7 @@ def main():
             help="The model to run",
         )
 
-    args = parser.parse_args()
+    args, unknownargs = parser.parse_known_args()
 
     if args.models:
         for p in sorted(available_models()):
@@ -208,7 +216,7 @@ def main():
     if args.class_ is not None:
         args.metadata["class"] = args.class_
 
-    model = load_model(args.model, **vars(args))
+    model = load_model(args.model, **vars(args), model_args=unknownargs)
 
     if args.fields:
         model.print_fields()

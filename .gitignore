@@ -167,3 +167,8 @@ cython_debug/
 *.download
 ?
 ?.*
+foo
+bar
+*.grib
+*.nc
+*.npz
