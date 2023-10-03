@@ -43,7 +43,7 @@ setuptools.setup(
     include_package_data=True,
     install_requires=[
         "entrypoints",
-        "earthkit-data @ git+ssh://git@github.com/ecmwf/earthkit-data.git@develop",
+        "earthkit-data>=0.4.0",
         "multiurl",
         "ecmwflibs>=0.5.3",
         "gputil",
