@@ -90,9 +90,11 @@ class CdsInput(RequestBasedInput):
     WHERE = "CDS"
 
     def pl_load_source(self, **kwargs):
+        kwargs["product_type"] = "reanalysis"
         return ekd.from_source("cds", "reanalysis-era5-pressure-levels", kwargs)
 
     def sfc_load_source(self, **kwargs):
+        kwargs["product_type"] = "reanalysis"
         return ekd.from_source("cds", "reanalysis-era5-single-levels", kwargs)
 
 
@@ -112,34 +114,6 @@ class FileInput:
     @cached_property
     def all_fields(self):
         return ekd.from_source("file", self.file)
-
-
-class FileOutput:
-    def __init__(self, owner, path, metadata, **kwargs):
-        self._first = True
-        metadata.setdefault("expver", owner.expver)
-        metadata.setdefault("class", "ml")
-
-        LOG.info("Writting results to %s.", path)
-        self.path = path
-        self.owner = owner
-        self.output = ekd.new_grib_output(
-            path,
-            split_output=True,
-            edition=2,
-            **metadata,
-        )
-
-    def write(self, *args, **kwargs):
-        return self.output.write(*args, **kwargs)
-
-
-class NoneOutput:
-    def __init__(self, *args, **kwargs):
-        LOG.info("Results will not be written.")
-
-    def write(self, *args, **kwargs):
-        pass
 
 
 INPUTS = dict(

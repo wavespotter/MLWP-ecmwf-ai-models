@@ -6,7 +6,7 @@ The `ai-models` command is used to run AI-based weather forecasting models. Thes
 
 Before using the `ai-models` command, ensure you have the following prerequisites:
 
-- Python 3.10 (it may work with different versions, but it has not been tested with 3.10).
+- Python 3.10 (it may work with different versions, but it has been tested with 3.10 on Linux/MacOS).
 - An ECMWF and/or CDS account for accessing input data (see below for more details).
 - A computed with a GPU for optimal performance (strongly recommended).
 
@@ -20,15 +20,17 @@ pip install ai-models
 
 ## Available Models
 
-Currently, two models can be installed:
+Currently, four models can be installed:
 
 ```bash
 pip install ai-models-panguweather
 pip install ai-models-fourcastnet
+pip install ai-models-graphcast  # Install details at https://github.com/ecmwf-lab/ai-models-graphcast
+pip install ai-models-fourcastnetv2
 ```
 
-See [ai-models-panguweather](https://github.com/ecmwf-lab/ai-models-panguweather) and [ai-models-fourcastnet](https://github.com/ecmwf-lab/ai-models-fourcastnet).
- for more details about these models.
+See [ai-models-panguweather](https://github.com/ecmwf-lab/ai-models-panguweather), [ai-models-fourcastnet](https://github.com/ecmwf-lab/ai-models-fourcastnet),
+ [ai-models-fourcastnetv2](https://github.com/ecmwf-lab/ai-models-fourcastnetv2) and [ai-models-graphcast](https://github.com/ecmwf-lab/ai-models-graphcast) for more details about these models.
 
 ## Running the models
 

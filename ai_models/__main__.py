@@ -12,13 +12,13 @@ import shlex
 import sys
 
 from .inputs import available_inputs
-from .model import available_models, load_model
+from .model import Timer, available_models, load_model
 from .outputs import available_outputs
 
 LOG = logging.getLogger(__name__)
 
 
-def main():
+def _main():
     parser = argparse.ArgumentParser()
 
     # See https://github.com/pytorch/pytorch/issues/77764
@@ -65,6 +65,12 @@ def main():
         "--json",
         action="store_true",
         help=("Dump the requests in JSON format."),
+    )
+
+    parser.add_argument(
+        "--dump-provenance",
+        metavar="FILE",
+        help=("Dump information for tracking provenance."),
     )
 
     parser.add_argument(
@@ -199,7 +205,7 @@ def main():
     if args.file is not None:
         args.input = "file"
 
-    if not args.fields and not args.retrieve_requests and not args.requests_extra:
+    if not args.fields and not args.retrieve_requests:
         logging.basicConfig(
             level="DEBUG" if args.debug else "INFO",
             format="%(asctime)s %(levelname)s %(message)s",
@@ -253,6 +259,19 @@ def main():
         sys.exit(1)
 
     model.finalise()
+
+    if args.dump_provenance:
+        with Timer("Collect provenance information"):
+            with open(args.dump_provenance, "w") as f:
+                prov = model.provenance()
+                import json  # import here so it is not listed in provenance
+
+                json.dump(prov, f, indent=4)
+
+
+def main():
+    with Timer("Total time"):
+        _main()
 
 
 if __name__ == "__main__":

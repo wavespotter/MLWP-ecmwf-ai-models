@@ -54,6 +54,7 @@ class Model:
     lagged = False
     assets_extra_dir = None
     retrieve = {}  # Extra parameters for retrieve
+    version = 1
 
     def __init__(self, input, output, download_assets, **kwargs):
         self.input = get_input(input, self, **kwargs)
@@ -62,8 +63,9 @@ class Model:
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-        if self.model_args:
-            args = self.parse_model_args(self.model_args)
+        # We need to call it to initialise the default args
+        args = self.parse_model_args(self.model_args)
+        if args:
             for k, v in vars(args).items():
                 setattr(self, k, v)
 
@@ -124,6 +126,13 @@ class Model:
                 LOG.info("Downloading %s", asset)
                 download(self.download_url.format(file=file), asset + ".download")
                 os.rename(asset + ".download", asset)
+
+    @property
+    def asset_files(self, **kwargs):
+        result = []
+        for file in self.download_files:
+            result.append(os.path.realpath(os.path.join(self.assets, file)))
+        return result
 
     @cached_property
     def device(self):
@@ -303,6 +312,7 @@ class Model:
                     param=self.param_sfc,
                 )
             )
+            r.pop("levelist", None)
 
             self.patch_retrieve_request(r)
             result.append(dict(**r))
@@ -317,7 +327,13 @@ class Model:
         return peek(path)
 
     def parse_model_args(self, args):
-        raise NotImplementedError(f"This model does not accept arguments {args}")
+        if args:
+            raise NotImplementedError(f"This model does not accept arguments {args}")
+
+    def provenance(self):
+        from .provenance import gather_provenance_info
+
+        return gather_provenance_info(self.asset_files)
 
 
 def load_model(name, **kwargs):
