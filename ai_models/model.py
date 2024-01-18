@@ -14,7 +14,9 @@ import time
 from collections import defaultdict
 from functools import cached_property
 
+import earthkit.data as ekd
 import entrypoints
+import numpy as np
 from earthkit.data.utils.humanize import seconds
 from multiurl import download
 
@@ -40,6 +42,8 @@ class Timer:
 
 
 class ArchiveCollector:
+    UNIQUE = {"date", "hdate", "time", "referenceDate", "type", "stream", "expver"}
+
     def __init__(self) -> None:
         self.expect = 0
         self.request = defaultdict(set)
@@ -48,13 +52,22 @@ class ArchiveCollector:
         self.expect += 1
         for k, v in field.items():
             self.request[k].add(str(v))
+            if k in self.UNIQUE:
+                if len(self.request[k]) > 1:
+                    raise ValueError(
+                        f"Field {field} has different values for {k}: {self.request[k]}"
+                    )
 
 
 class Model:
     lagged = False
     assets_extra_dir = None
     retrieve = {}  # Extra parameters for retrieve
-    version = 1
+    version = 1  # To be overriden in subclasses
+
+    param_level_ml = ([], [])  # param, level
+    param_level_pl = ([], [])  # param, level
+    param_sfc = []  # param
 
     def __init__(self, input, output, download_assets, **kwargs):
         self.input = get_input(input, self, **kwargs)
@@ -92,6 +105,10 @@ class Model:
         return self.input.fields_pl
 
     @cached_property
+    def fields_ml(self):
+        return self.input.fields_ml
+
+    @cached_property
     def fields_sfc(self):
         return self.input.fields_sfc
 
@@ -107,6 +124,11 @@ class Model:
     def collect_archive_requests(self, written):
         if self.archive_requests:
             handle, path = written
+            if self.hindcast_reference_year:
+                # The clone is necessary because the handle
+                # does not return always return recently set keys
+                handle = handle.clone()
+
             self.archiving[path].add(handle.as_mars())
 
     def finalise(self):
@@ -151,7 +173,21 @@ class Model:
             device.upper(),
         )
 
+        if self.only_gpu:
+            if device == "cpu":
+                raise RuntimeError("GPU is not available")
+
         return device
+
+    def torch_deterministic_mode(self):
+        import torch
+
+        LOG.info("Setting deterministic mode for PyTorch")
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.use_deterministic_algorithms(True)
 
     @cached_property
     def providers(self):
@@ -162,10 +198,13 @@ class Model:
 
         providers = []
 
-        if GPUtil.getAvailable():
-            providers += [
-                "CUDAExecutionProvider",  # CUDA
-            ]
+        try:
+            if GPUtil.getAvailable():
+                providers += [
+                    "CUDAExecutionProvider",  # CUDA
+                ]
+        except Exception:
+            pass
 
         if sys.platform == "darwin":
             if platform.machine() == "arm64":
@@ -183,6 +222,12 @@ class Model:
             "Using device '%s'. The speed of inference depends greatly on the device.",
             ort.get_device(),
         )
+
+        if self.only_gpu:
+            assert isinstance(ort.get_device(), str)
+            if ort.get_device() == "CPU":
+                raise RuntimeError("GPU is not available")
+
         return providers
 
     def timer(self, title):
@@ -195,7 +240,7 @@ class Model:
         LOG.info("Model initialisation: %s", seconds(elapsed))
         return Stepper(step, self.lead_time)
 
-    def datetimes(self):
+    def _datetimes(self, dates):
         date = self.date
         assert isinstance(date, int)
         if date <= 0:
@@ -212,25 +257,50 @@ class Model:
         if not lagged:
             lagged = [0]
 
+        result = []
+        for basedate in dates:
+            for lag in lagged:
+                date = basedate + datetime.timedelta(hours=lag)
+                result.append(
+                    (
+                        date.year * 10000 + date.month * 100 + date.day,
+                        date.hour,
+                    ),
+                )
+
+        return result
+
+    def datetimes(self, step=0):
+        if self.staging_dates:
+            assert step == 0, step
+            dates = []
+            with open(self.staging_dates) as f:
+                for line in f:
+                    dates.append(datetime.datetime.fromisoformat(line.strip()))
+
+            return self._datetimes(dates)
+
+        date = self.date
+        assert isinstance(date, int)
+        if date <= 0:
+            date = datetime.datetime.utcnow() + datetime.timedelta(days=date)
+            date = date.year * 10000 + date.month * 100 + date.day
+
+        time = self.time
+        assert isinstance(time, int)
+        if time < 100:
+            time *= 100
+
+        assert time in (0, 600, 1200, 1800), time
+
         full = datetime.datetime(
             date // 10000,
             date % 10000 // 100,
             date % 100,
             time // 100,
             time % 100,
-        )
-
-        result = []
-        for lag in lagged:
-            date = full + datetime.timedelta(hours=lag)
-            result.append(
-                (
-                    date.year * 10000 + date.month * 100 + date.day,
-                    date.hour,
-                ),
-            )
-
-        return result
+        ) + datetime.timedelta(hours=step)
+        return self._datetimes([full])
 
     def print_fields(self):
         param, level = self.param_level_pl
@@ -334,6 +404,28 @@ class Model:
         from .provenance import gather_provenance_info
 
         return gather_provenance_info(self.asset_files)
+
+    def forcing_and_constants(self, date, param):
+        source = self.all_fields[:1]
+
+        ds = ekd.from_source(
+            "constants",
+            source,
+            date=date,
+            param=param,
+        )
+
+        assert len(ds) == len(param), (len(ds), len(param), date)
+
+        return ds.to_numpy(dtype=np.float32)
+
+    @cached_property
+    def gridpoints(self):
+        return len(self.all_fields[0].grid_points()[0])
+
+    @cached_property
+    def start_datetime(self):
+        return self.all_fields.order_by(valid_datetime="ascending")[-1].datetime()
 
 
 def load_model(name, **kwargs):

@@ -173,3 +173,5 @@ bar
 *.nc
 *.npz
 *.json
+*.req
+dev/

@@ -24,6 +24,10 @@ class RequestBasedInput:
 
     @cached_property
     def fields_sfc(self):
+        param = self.owner.param_sfc
+        if not param:
+            return cml.load_source("empty")
+
         LOG.info(f"Loading surface fields from {self.WHERE}")
 
         return ekd.from_source(
@@ -33,7 +37,7 @@ class RequestBasedInput:
                     **self._patch(
                         date=date,
                         time=time,
-                        param=self.owner.param_sfc,
+                        param=param,
                         grid=self.owner.grid,
                         area=self.owner.area,
                         **self.owner.retrieve,
@@ -45,8 +49,11 @@ class RequestBasedInput:
 
     @cached_property
     def fields_pl(self):
-        LOG.info(f"Loading pressure fields from {self.WHERE}")
         param, level = self.owner.param_level_pl
+        if not (param and level):
+            return cml.load_source("empty")
+
+        LOG.info(f"Loading pressure fields from {self.WHERE}")
         return ekd.from_source(
             "multi",
             [
@@ -65,8 +72,32 @@ class RequestBasedInput:
         )
 
     @cached_property
+    def fields_ml(self):
+        param, level = self.owner.param_level_ml
+        if not (param and level):
+            return cml.load_source("empty")
+
+        LOG.info(f"Loading model fields from {self.WHERE}")
+        return ekd.from_source(
+            "multi",
+            [
+                self.ml_load_source(
+                    **self._patch(
+                        date=date,
+                        time=time,
+                        param=param,
+                        level=level,
+                        grid=self.owner.grid,
+                        area=self.owner.area,
+                    )
+                )
+                for date, time in self.owner.datetimes()
+            ],
+        )
+
+    @cached_property
     def all_fields(self):
-        return self.fields_sfc + self.fields_pl
+        return self.fields_sfc + self.fields_pl + self.fields_ml
 
 
 class MarsInput(RequestBasedInput):
@@ -85,6 +116,11 @@ class MarsInput(RequestBasedInput):
         logging.debug("load source mars %s", kwargs)
         return ekd.from_source("mars", kwargs)
 
+    def ml_load_source(self, **kwargs):
+        kwargs["levtype"] = "ml"
+        logging.debug("load source mars %s", kwargs)
+        return ekd.from_source("mars", kwargs)
+
 
 class CdsInput(RequestBasedInput):
     WHERE = "CDS"
@@ -97,6 +133,9 @@ class CdsInput(RequestBasedInput):
         kwargs["product_type"] = "reanalysis"
         return ekd.from_source("cds", "reanalysis-era5-single-levels", kwargs)
 
+    def ml_load_source(self, **kwargs):
+        raise NotImplementedError("CDS does not support model levels")
+
 
 class FileInput:
     def __init__(self, owner, file, **kwargs):
@@ -105,11 +144,15 @@ class FileInput:
 
     @cached_property
     def fields_sfc(self):
-        return ekd.from_source("file", self.file).sel(levtype="sfc")
+        return self.all_fields.sel(levtype="sfc")
 
     @cached_property
     def fields_pl(self):
-        return ekd.from_source("file", self.file).sel(levtype="pl")
+        return self.all_fields.sel(levtype="pl")
+
+    @cached_property
+    def fields_ml(self):
+        return self.all_fields.sel(levtype="ml")
 
     @cached_property
     def all_fields(self):
