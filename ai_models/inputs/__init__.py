@@ -26,7 +26,7 @@ class RequestBasedInput:
     def fields_sfc(self):
         param = self.owner.param_sfc
         if not param:
-            return cml.load_source("empty")
+            return ekd.load_source("empty")
 
         LOG.info(f"Loading surface fields from {self.WHERE}")
 
@@ -51,7 +51,7 @@ class RequestBasedInput:
     def fields_pl(self):
         param, level = self.owner.param_level_pl
         if not (param and level):
-            return cml.load_source("empty")
+            return ekd.load_source("empty")
 
         LOG.info(f"Loading pressure fields from {self.WHERE}")
         return ekd.from_source(
@@ -75,7 +75,7 @@ class RequestBasedInput:
     def fields_ml(self):
         param, level = self.owner.param_level_ml
         if not (param and level):
-            return cml.load_source("empty")
+            return ekd.load_source("empty")
 
         LOG.info(f"Loading model fields from {self.WHERE}")
         return ekd.from_source(
